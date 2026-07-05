@@ -205,6 +205,28 @@ function formatDateChip(iso){
   const [y,m,d] = iso.split("-").map(Number);
   return new Date(y, m-1, d).toLocaleDateString(undefined, { month:"short", day:"numeric" });
 }
+function formatDateRanges(dates){
+  if (!dates || !dates.length) return [];
+  const sorted = [...dates].sort();
+  const ranges = [];
+  let start = sorted[0], prev = sorted[0];
+  for (let i=1; i<sorted.length; i++){
+    const cur = sorted[i];
+    const diffDays = Math.round((new Date(cur) - new Date(prev)) / 86400000);
+    if (diffDays === 1) {
+      prev = cur;
+    } else {
+      ranges.push([start, prev]);
+      start = cur; prev = cur;
+    }
+  }
+  ranges.push([start, prev]);
+  return ranges.map(([s,e]) => s === e ? formatDateChip(s) : `${formatDateChip(s)}–${formatDateChip(e)}`);
+}
+function getOverlap(datesA, datesB){
+  const setB = new Set(datesB || []);
+  return (datesA || []).filter(d => setB.has(d)).sort();
+}
 function escapeHtml(str){
   const d = document.createElement("div");
   d.innerText = str;
@@ -420,11 +442,32 @@ window.confirmDates = async () => {
   try {
     await setDoc(doc(db, currentUser.role === "worker" ? "workers" : "employers", currentUser.docId), { [field]: arr }, { merge: true });
     currentUser[field] = arr;
+    if (currentUser.role === "employer") {
+      view = "employerJobInfo";
+      render();
+      return;
+    }
     const flash = document.getElementById("savedFlash");
     if (flash) { flash.classList.add("show"); setTimeout(() => flash.classList.remove("show"), 1800); }
   } catch (e) {
     alert("Couldn't save: " + (e.message || e));
   }
+};
+
+window.saveJobInfo = async () => {
+  const jobDescription = document.getElementById("jobDesc").value.trim();
+  const payRate = document.getElementById("payRate").value.trim();
+  try {
+    await setDoc(doc(db, "employers", currentUser.docId), { jobDescription, payRate }, { merge: true });
+    currentUser.jobDescription = jobDescription;
+    currentUser.payRate = payRate;
+  } catch (e) { /* non-fatal */ }
+  view = "main"; mainTab = "calendar";
+  render();
+};
+window.skipJobInfo = () => {
+  view = "main"; mainTab = "calendar";
+  render();
 };
 
 // ---------- render ----------
@@ -485,7 +528,8 @@ function renderListView(){
       ${withDates.length ? withDates.map(e => `
         <div class="listing">
           <p class="listing-name">${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</p>
-          <div>${(e.requestedDates||[]).map(d=>`<span class="date-chip">${formatDateChip(d)}</span>`).join("")}</div>
+          ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
+          <div>${formatDateRanges(e.requestedDates).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
         </div>
       `).join("") : `<div class="empty-state">No one's posted a request yet. Check back soon.</div>`}
     `;
@@ -498,7 +542,7 @@ function renderListView(){
       <div class="listing">
         <p class="listing-name">${escapeHtml(w.firstName)} ${escapeHtml(w.lastName)}, ${escapeHtml(String(w.age))}</p>
         <p class="listing-meta">📞 ${escapeHtml(w.phone)} &nbsp;·&nbsp; Parent: ${escapeHtml(w.parentName)}</p>
-        <div>${(w.availability||[]).map(d=>`<span class="date-chip">${formatDateChip(d)}</span>`).join("")}</div>
+        <div>${formatDateRanges(w.availability).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
       </div>
     `).join("") : `<div class="empty-state">No workers have posted availability yet.</div>`}
 
@@ -506,10 +550,38 @@ function renderListView(){
     ${otherEmployers.length ? otherEmployers.map(e => `
       <div class="listing">
         <p class="listing-name">${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</p>
-        <div>${(e.requestedDates||[]).map(d=>`<span class="date-chip">${formatDateChip(d)}</span>`).join("")}</div>
+        ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
+        <div>${formatDateRanges(e.requestedDates).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
       </div>
     `).join("") : `<div class="empty-state">No other requests posted yet.</div>`}
   `;
+}
+
+function renderMatchesView(){
+  if (currentUser.role === "worker") {
+    const myDates = currentUser.availability || [];
+    const matches = allEmployers
+      .map(e => ({ e, overlap: getOverlap(myDates, e.requestedDates) }))
+      .filter(m => m.overlap.length);
+    return matches.length ? matches.map(({e, overlap}) => `
+      <div class="listing">
+        <p class="listing-name">🤝 ${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</p>
+        ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
+        <div>${formatDateRanges(overlap).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
+      </div>
+    `).join("") : `<div class="empty-state">No matches yet. Once your availability overlaps with an employer's request, they'll show up here.</div>`;
+  }
+  const myDates = currentUser.requestedDates || [];
+  const matches = allWorkers
+    .map(w => ({ w, overlap: getOverlap(myDates, w.availability) }))
+    .filter(m => m.overlap.length);
+  return matches.length ? matches.map(({w, overlap}) => `
+    <div class="listing">
+      <p class="listing-name">🤝 ${escapeHtml(w.firstName)} ${escapeHtml(w.lastName)}, ${escapeHtml(String(w.age))}</p>
+      <p class="listing-meta">📞 ${escapeHtml(w.phone)} &nbsp;·&nbsp; Parent: ${escapeHtml(w.parentName)}</p>
+      <div>${formatDateRanges(overlap).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
+    </div>
+  `).join("") : `<div class="empty-state">No matches yet. Once a worker's availability overlaps with your request, they'll show up here.</div>`;
 }
 
 function render(){
@@ -604,6 +676,23 @@ function render(){
     return;
   }
 
+  if (view === "employerJobInfo") {
+    root.innerHTML = `
+      <div class="board-title">📌 Rent-A-Teenager</div>
+      <div class="card pin-blue">
+        <p class="eyebrow">Almost done</p>
+        <h2 class="headline">What's the job?</h2>
+        <p class="desc">Totally optional — helps workers know what they're signing up for. Hit Skip if you'd rather not.</p>
+        <label for="jobDesc">What kind of job?</label>
+        <input id="jobDesc" type="text" placeholder="e.g. Mowing, babysitting, moving boxes" value="${escapeHtml(currentUser.jobDescription||"")}">
+        <label for="payRate">What will you pay?</label>
+        <input id="payRate" type="text" placeholder="e.g. $20/hr or $50 flat" value="${escapeHtml(currentUser.payRate||"")}">
+        <button class="btn full" onclick="saveJobInfo()">Save</button>
+        <button class="btn full" style="background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;margin-top:10px;font-size:1.15rem;" onclick="skipJobInfo()">Skip →</button>
+      </div>`;
+    return;
+  }
+
   if (view === "settings") {
     const isEmployer = currentUser.role === "employer";
     root.innerHTML = `
@@ -650,10 +739,13 @@ function render(){
       <div class="tabs">
         <button class="tab-btn ${mainTab==='calendar'?'active':''}" onclick="setTab('calendar')">📅 Calendar</button>
         <button class="tab-btn ${mainTab==='list'?'active':''}" onclick="setTab('list')">📋 List view</button>
+        <button class="tab-btn ${mainTab==='matches'?'active':''}" onclick="setTab('matches')">🤝 Matches</button>
       </div>
       <div class="card">
         ${mainTab === 'calendar'
           ? `<p class="eyebrow">${currentUser.role === 'worker' ? 'Mark your availability' : 'Mark days you need help'}</p>` + renderCalendarGrid()
+          : mainTab === 'matches'
+          ? `<p class="eyebrow">Where you overlap</p>` + renderMatchesView()
           : `<p class="eyebrow">The board</p>` + renderListView()}
       </div>`;
     return;
