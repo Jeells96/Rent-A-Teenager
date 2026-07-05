@@ -160,7 +160,6 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
-import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -173,10 +172,9 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
 const db = getFirestore(app);
 
-const EMPLOYER_PIN = "4321"; // client-side pre-check; the real gate lives in Firestore rules
+const EMPLOYER_PIN = "4321"; // just a shared screen-only code — no server-side enforcement
 const SESSION_KEY = "rat-session";
 
 // ---------- state ----------
@@ -233,16 +231,8 @@ async function readRememberedSession(){
   } catch (e) { return null; }
 }
 
-// ---------- auth bootstrap ----------
-onAuthStateChanged(auth, async (user) => {
-  if (!user) {
-    try { await signInAnonymously(auth); }
-    catch (e) {
-      root.innerHTML = `<div class="card"><h2 class="headline">Couldn't connect</h2><p class="desc">Anonymous sign-in failed. In the Firebase console, go to Authentication → Sign-in method and enable "Anonymous". (${e.code || e.message})</p></div>`;
-    }
-    return;
-  }
-
+// ---------- bootstrap ----------
+(async () => {
   const remembered = await readRememberedSession();
   if (remembered) {
     try {
@@ -261,7 +251,7 @@ onAuthStateChanged(auth, async (user) => {
   }
   view = "roleSelect";
   render();
-});
+})();
 
 function attachListeners(){
   clearListeners();
@@ -305,10 +295,6 @@ window.submitEmployerName = async () => {
   const slug = nameSlug(first, last);
   if (!slug) { formError = "Please enter a valid name."; render(); return; }
   try {
-    const uid = auth.currentUser.uid;
-    // establish this device's verified-employer session (real, rule-enforced gate)
-    await setDoc(doc(db, "employerSessions", uid), { pin: EMPLOYER_PIN, createdAt: new Date().toISOString() }, { merge: true });
-
     const ref = doc(db, "employers", slug);
     const existing = await getDoc(ref);
     if (existing.exists()) {
