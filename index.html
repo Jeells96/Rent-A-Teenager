@@ -94,6 +94,7 @@
   .btn:hover{transform:translateY(-1px);}
   .btn:active{transform:translateY(1px);box-shadow:1px 1px 0 rgba(0,0,0,0.3);}
   .btn.full{width:100%;margin-top:18px;text-align:center;}
+  .btn.small{font-size:0.8rem;padding:6px 12px;box-shadow:2px 2px 0 rgba(0,0,0,0.3);}
   .btn[disabled]{opacity:0.5;cursor:default;}
   .link-back{display:inline-block;margin-top:14px;font-size:0.85rem;color:#6b6153;cursor:pointer;text-decoration:underline;background:none;border:none;font-family:'Karla',sans-serif;}
 
@@ -160,7 +161,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDcc9Xmpyp4SXPYIP4RRUq3tydoKN2dW38",
@@ -218,17 +219,17 @@ function computeCounts(items, field){
 }
 
 async function rememberSession(role, docId){
-  try { await window.storage.set(SESSION_KEY, JSON.stringify({ role, docId }), false); }
-  catch (e) { /* non-fatal */ }
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ role, docId })); }
+  catch (e) { /* non-fatal, e.g. private browsing */ }
 }
 async function forgetSession(){
-  try { await window.storage.delete(SESSION_KEY, false); }
+  try { localStorage.removeItem(SESSION_KEY); }
   catch (e) { /* non-fatal */ }
 }
 async function readRememberedSession(){
   try {
-    const res = await window.storage.get(SESSION_KEY, false);
-    return res ? JSON.parse(res.value) : null;
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
   } catch (e) { return null; }
 }
 
@@ -266,14 +267,14 @@ function attachListeners(){
   clearListeners();
   const uEmp = onSnapshot(collection(db, "employers"), (snap) => {
     allEmployers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (view === "main") render();
+    if (view === "main" || view === "settings") render();
   }, () => {});
   unsubs.push(uEmp);
 
   if (currentUser.role === "employer") {
     const uWork = onSnapshot(collection(db, "workers"), (snap) => {
       allWorkers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      if (view === "main") render();
+      if (view === "main" || view === "settings") render();
     }, () => {});
     unsubs.push(uWork);
   }
@@ -386,6 +387,33 @@ window.switchUser = async () => {
   allWorkers = []; allEmployers = [];
   view = "roleSelect";
   render();
+};
+
+window.goSettings = () => { view = "settings"; render(); };
+window.goMain = () => { view = "main"; render(); };
+
+window.deleteMyEntry = async () => {
+  if (!confirm("Delete your entry? This can't be undone.")) return;
+  try {
+    await deleteDoc(doc(db, currentUser.role === "worker" ? "workers" : "employers", currentUser.docId));
+    clearListeners();
+    await forgetSession();
+    currentUser = null;
+    allWorkers = []; allEmployers = [];
+    view = "roleSelect";
+    render();
+  } catch (e) {
+    alert("Couldn't delete: " + (e.message || e));
+  }
+};
+
+window.deleteEntry = async (collectionName, id) => {
+  if (!confirm("Delete this entry? This can't be undone.")) return;
+  try {
+    await deleteDoc(doc(db, collectionName, id));
+  } catch (e) {
+    alert("Couldn't delete: " + (e.message || e));
+  }
 };
 
 window.setTab = (tab) => { mainTab = tab; render(); };
@@ -590,12 +618,48 @@ function render(){
     return;
   }
 
+  if (view === "settings") {
+    const isEmployer = currentUser.role === "employer";
+    root.innerHTML = `
+      <div class="board-title">📌 Rent-A-Teenager</div>
+      <div class="card">
+        <p class="eyebrow">Settings</p>
+        <h2 class="headline">${escapeHtml(currentUser.firstName)} ${escapeHtml(currentUser.lastName)}</h2>
+        <p class="desc">Deleting removes this entry from Firebase for good — it won't come back by logging in again.</p>
+        <button class="btn full" style="background:var(--pin-red)" onclick="deleteMyEntry()">Delete my entry</button>
+        <button class="link-back" onclick="goMain()">← Back</button>
+      </div>
+      ${isEmployer ? `
+      <div class="card pin-blue">
+        <p class="eyebrow">Manage all entries</p>
+        <h2 class="headline">Workers</h2>
+        ${allWorkers.length ? allWorkers.map(w => `
+          <div class="listing" style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <span class="listing-name" style="margin:0;">${escapeHtml(w.firstName)} ${escapeHtml(w.lastName)}</span>
+            <button class="btn small" style="background:var(--pin-red)" onclick="deleteEntry('workers','${w.id}')">Delete</button>
+          </div>
+        `).join("") : `<div class="empty-state">No workers yet.</div>`}
+        <h2 class="headline" style="margin-top:20px;">Employers</h2>
+        ${allEmployers.length ? allEmployers.map(e => `
+          <div class="listing" style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <span class="listing-name" style="margin:0;">${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</span>
+            <button class="btn small" style="background:var(--pin-red)" onclick="deleteEntry('employers','${e.id}')">Delete</button>
+          </div>
+        `).join("") : `<div class="empty-state">No employers yet.</div>`}
+      </div>` : ""}`;
+    return;
+  }
+
   if (view === "main") {
     root.innerHTML = `
       <div class="board-title">📌 Rent-A-Teenager</div>
       <div class="topbar">
         <div class="whoami"><strong>${escapeHtml(currentUser.firstName)} ${escapeHtml(currentUser.lastName)}</strong><span class="badge ${currentUser.role}">${currentUser.role}</span></div>
-        <button class="switch-link" onclick="switchUser()">Switch user</button>
+        <span>
+          <button class="switch-link" onclick="goSettings()">Settings ⚙️</button>
+          &nbsp;·&nbsp;
+          <button class="switch-link" onclick="switchUser()">Switch user</button>
+        </span>
       </div>
       <div class="tabs">
         <button class="tab-btn ${mainTab==='calendar'?'active':''}" onclick="setTab('calendar')">📅 Calendar</button>
