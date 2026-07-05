@@ -232,6 +232,10 @@ function escapeHtml(str){
   d.innerText = str;
   return d.innerHTML;
 }
+function displayName(u){
+  const name = `${u.firstName || ""} ${u.lastName || ""}`.trim();
+  return name || (u.role === "employer" ? "Employer" : "Worker");
+}
 function computeCounts(items, field){
   const counts = {};
   items.forEach(item => (item[field] || []).forEach(d => { counts[d] = (counts[d]||0) + 1; }));
@@ -682,11 +686,10 @@ function render(){
       <div class="card pin-blue">
         <p class="eyebrow">Almost done</p>
         <h2 class="headline">What's the job?</h2>
-        <p class="desc">Totally optional — helps workers know what they're signing up for. Hit Skip if you'd rather not.</p>
         <label for="jobDesc">What kind of job?</label>
-        <input id="jobDesc" type="text" placeholder="e.g. Mowing, babysitting, moving boxes" value="${escapeHtml(currentUser.jobDescription||"")}">
+        <input id="jobDesc" type="text" placeholder="e.g. Sweeping the job site with a toothbrush" value="${escapeHtml(currentUser.jobDescription||"")}">
         <label for="payRate">What will you pay?</label>
-        <input id="payRate" type="text" placeholder="e.g. $20/hr or $50 flat" value="${escapeHtml(currentUser.payRate||"")}">
+        <input id="payRate" type="text" placeholder="e.g. $1.50/hr and a warm Gatorade" value="${escapeHtml(currentUser.payRate||"")}">
         <button class="btn full" onclick="saveJobInfo()">Save</button>
         <button class="btn full" style="background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;margin-top:10px;font-size:1.15rem;" onclick="skipJobInfo()">Skip →</button>
       </div>`;
@@ -699,7 +702,7 @@ function render(){
       <div class="board-title">📌 Rent-A-Teenager</div>
       <div class="card">
         <p class="eyebrow">Settings</p>
-        <h2 class="headline">${escapeHtml(currentUser.firstName)} ${escapeHtml(currentUser.lastName)}</h2>
+        <h2 class="headline">${escapeHtml(displayName(currentUser))}</h2>
         <p class="desc">Deleting removes this entry from Firebase for good — it won't come back by logging in again.</p>
         <button class="btn full" style="background:var(--pin-red)" onclick="deleteMyEntry()">Delete my entry</button>
         <button class="link-back" onclick="goMain()">← Back</button>
@@ -729,7 +732,7 @@ function render(){
     root.innerHTML = `
       <div class="board-title">📌 Rent-A-Teenager</div>
       <div class="topbar">
-        <div class="whoami"><strong>${escapeHtml(currentUser.firstName)} ${escapeHtml(currentUser.lastName)}</strong><span class="badge ${currentUser.role}">${currentUser.role}</span></div>
+        <div class="whoami"><strong>${escapeHtml(displayName(currentUser))}</strong><span class="badge ${currentUser.role}">${currentUser.role}</span></div>
         <span>
           <button class="switch-link" onclick="goSettings()">Settings ⚙️</button>
           &nbsp;·&nbsp;
