@@ -324,7 +324,9 @@ window.submitEmployerName = async () => {
     const ref = doc(db, "employers", slug);
     const existing = await getDoc(ref);
     if (existing.exists()) {
-      currentUser = { docId: slug, role: "employer", ...existing.data() };
+      // always re-save name on login — heals any older record that's missing it
+      await setDoc(ref, { firstName: first, lastName: last }, { merge: true });
+      currentUser = { docId: slug, role: "employer", ...existing.data(), firstName: first, lastName: last };
       selectedDates = new Set(currentUser.requestedDates || []);
     } else {
       await setDoc(ref, { firstName: first, lastName: last, pin: EMPLOYER_PIN, requestedDates: [], createdAt: new Date().toISOString() });
@@ -348,7 +350,7 @@ window.submitWorkerPhone = async () => {
   try {
     const ref = doc(db, "workers", phone);
     const existing = await getDoc(ref);
-    if (existing.exists()) {
+    if (existing.exists() && existing.data().firstName) {
       currentUser = { docId: phone, role: "worker", ...existing.data() };
       selectedDates = new Set(currentUser.availability || []);
       await rememberSession("worker", phone);
@@ -375,12 +377,14 @@ window.submitWorkerInfo = async () => {
   if (!first || !last || !age || !parent) { formError = "All fields are required."; render(); return; }
   try {
     const ref = doc(db, "workers", pendingPhone);
+    const existing = await getDoc(ref);
+    const priorAvailability = existing.exists() ? (existing.data().availability || []) : [];
     await setDoc(ref, {
       firstName: first, lastName: last, phone: pendingPhone, age, parentName: parent,
-      availability: [], createdAt: new Date().toISOString()
-    });
-    currentUser = { docId: pendingPhone, role: "worker", firstName: first, lastName: last, phone: pendingPhone, age, parentName: parent, availability: [] };
-    selectedDates = new Set();
+      availability: priorAvailability, createdAt: new Date().toISOString()
+    }, { merge: true });
+    currentUser = { docId: pendingPhone, role: "worker", firstName: first, lastName: last, phone: pendingPhone, age, parentName: parent, availability: priorAvailability };
+    selectedDates = new Set(priorAvailability);
     await rememberSession("worker", pendingPhone);
     view = "main"; mainTab = "calendar"; formError = "";
     attachListeners();
@@ -631,9 +635,9 @@ function render(){
         <h2 class="headline">Your name</h2>
         <p class="desc">Already registered? Enter the same name to pull up your saved requests.</p>
         <label for="empFirst">First name</label>
-        <input id="empFirst" type="text" autofocus>
+        <input id="empFirst" type="text" placeholder="Jaren" autofocus>
         <label for="empLast">Last name</label>
-        <input id="empLast" type="text">
+        <input id="empLast" type="text" placeholder="Smith">
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
         <button class="btn full" onclick="submitEmployerName()">Enter the board</button>
         <button class="link-back" onclick="goEmployerPin()">← Back</button>
