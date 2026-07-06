@@ -505,6 +505,7 @@ window.confirmWorkDone = async () => {
   const ctx = markWorkedContext;
   const daysWorked = Array.from(markWorkedSelected).sort();
   if (!daysWorked.length) { alert("Select at least one day."); return; }
+
   try {
     await addDoc(collection(db, "completedWork"), {
       workerId: ctx.workerId, workerName: ctx.workerName,
@@ -512,31 +513,40 @@ window.confirmWorkDone = async () => {
       jobDescription: ctx.jobDescription || "", payRate: ctx.payRate || "",
       days: daysWorked, completedAt: new Date().toISOString()
     });
+  } catch (e) {
+    alert("Couldn't save to history — nothing else was changed: " + (e.message || e));
+    return;
+  }
 
+  try {
     const workerRef = doc(db, "workers", ctx.workerId);
     const workerSnap = await getDoc(workerRef);
     const newAvailability = (workerSnap.exists() ? (workerSnap.data().availability || []) : []).filter(d => !daysWorked.includes(d));
     await setDoc(workerRef, { availability: newAvailability }, { merge: true });
-
-    const employerRef = doc(db, "employers", ctx.employerId);
-    const employerSnap = await getDoc(employerRef);
-    const newRequested = (employerSnap.exists() ? (employerSnap.data().requestedDates || []) : []).filter(d => !daysWorked.includes(d));
-    await setDoc(employerRef, { requestedDates: newRequested }, { merge: true });
-
     if (currentUser.role === "worker" && currentUser.docId === ctx.workerId) {
       currentUser.availability = newAvailability;
       selectedDates = new Set(newAvailability);
     }
+  } catch (e) {
+    alert("Saved to history, but couldn't update the worker's availability: " + (e.message || e));
+  }
+
+  try {
+    const employerRef = doc(db, "employers", ctx.employerId);
+    const employerSnap = await getDoc(employerRef);
+    const newRequested = (employerSnap.exists() ? (employerSnap.data().requestedDates || []) : []).filter(d => !daysWorked.includes(d));
+    await setDoc(employerRef, { requestedDates: newRequested }, { merge: true });
     if (currentUser.role === "employer" && currentUser.docId === ctx.employerId) {
       currentUser.requestedDates = newRequested;
       selectedDates = new Set(newRequested);
     }
-    markWorkedContext = null;
-    view = "main"; mainTab = "matches";
-    render();
   } catch (e) {
-    alert("Couldn't save that: " + (e.message || e));
+    alert("Saved to history, but couldn't update the employer's requested days: " + (e.message || e));
   }
+
+  markWorkedContext = null;
+  view = "main"; mainTab = "history";
+  render();
 };
 
 window.openResume = (workerId) => {
