@@ -110,7 +110,7 @@
   .badge.employer{background:#dbe6ef;color:#26506e;}
 
   .tabs{display:flex;gap:8px;margin-bottom:16px;}
-  .tab-btn{flex:1;font-family:'Kalam',cursive;font-size:1.05rem;padding:10px;background:var(--paper-dark);border:2px solid var(--ink);border-radius:2px;cursor:pointer;color:var(--ink);}
+  .tab-btn{flex:1;font-family:'Kalam',cursive;font-size:0.9rem;padding:9px 4px;background:var(--paper-dark);border:2px solid var(--ink);border-radius:2px;cursor:pointer;color:var(--ink);white-space:nowrap;}
   .tab-btn.active{background:var(--ink);color:var(--paper);}
 
   .legend{display:flex;gap:16px;font-size:0.78rem;color:#5c5142;margin-bottom:10px;flex-wrap:wrap;}
@@ -160,7 +160,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, addDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDcc9Xmpyp4SXPYIP4RRUq3tydoKN2dW38",
@@ -178,7 +178,7 @@ const EMPLOYER_PIN = "4321"; // just a shared screen-only code — no server-sid
 const SESSION_KEY = "rat-session";
 
 // ---------- state ----------
-let view = "loading"; // loading | roleSelect | employerPin | employerName | workerPhone | workerInfo | main
+let view = "loading"; // loading | roleSelect | employerPin | employerName | workerPhone | workerInfo | main | employerJobInfo | settings | markWorked | resume
 let currentUser = null; // { docId, role, ...profile }
 let pendingPhone = "";
 let mainTab = "calendar";
@@ -188,6 +188,11 @@ let selectedDates = new Set();
 let formError = "";
 let allWorkers = [];
 let allEmployers = [];
+let allCompletedWork = [];
+let matchesCache = [];
+let markWorkedContext = null; // { workerId, workerName, employerId, employerName, jobDescription, payRate, overlapDates }
+let markWorkedSelected = new Set();
+let resumeWorkerId = null;
 let unsubs = [];
 
 const root = document.getElementById("app");
@@ -287,6 +292,12 @@ function attachListeners(){
   }, () => {});
   unsubs.push(uEmp);
 
+  const uHist = onSnapshot(collection(db, "completedWork"), (snap) => {
+    allCompletedWork = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (view === "main" || view === "resume") render();
+  }, () => {});
+  unsubs.push(uHist);
+
   if (currentUser.role === "employer") {
     const uWork = onSnapshot(collection(db, "workers"), (snap) => {
       allWorkers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -317,20 +328,21 @@ window.submitPin = () => {
 window.submitEmployerName = async () => {
   const first = document.getElementById("empFirst").value.trim();
   const last = document.getElementById("empLast").value.trim();
-  if (!first || !last) { formError = "First and last name are both required."; render(); return; }
+  const phone = document.getElementById("empPhone").value.trim();
+  if (!first || !last || !phone) { formError = "First name, last name, and phone number are all required."; render(); return; }
   const slug = nameSlug(first, last);
   if (!slug) { formError = "Please enter a valid name."; render(); return; }
   try {
     const ref = doc(db, "employers", slug);
     const existing = await getDoc(ref);
     if (existing.exists()) {
-      // always re-save name on login — heals any older record that's missing it
-      await setDoc(ref, { firstName: first, lastName: last }, { merge: true });
-      currentUser = { docId: slug, role: "employer", ...existing.data(), firstName: first, lastName: last };
+      // always re-save name/phone on login — heals any older record that's missing it
+      await setDoc(ref, { firstName: first, lastName: last, phone }, { merge: true });
+      currentUser = { docId: slug, role: "employer", ...existing.data(), firstName: first, lastName: last, phone };
       selectedDates = new Set(currentUser.requestedDates || []);
     } else {
-      await setDoc(ref, { firstName: first, lastName: last, pin: EMPLOYER_PIN, requestedDates: [], createdAt: new Date().toISOString() });
-      currentUser = { docId: slug, role: "employer", firstName: first, lastName: last, requestedDates: [] };
+      await setDoc(ref, { firstName: first, lastName: last, phone, pin: EMPLOYER_PIN, requestedDates: [], createdAt: new Date().toISOString() });
+      currentUser = { docId: slug, role: "employer", firstName: first, lastName: last, phone, requestedDates: [] };
       selectedDates = new Set();
     }
     await rememberSession("employer", slug);
@@ -478,6 +490,61 @@ window.skipJobInfo = () => {
   render();
 };
 
+window.startMarkWorked = (idx) => {
+  markWorkedContext = matchesCache[idx];
+  markWorkedSelected = new Set(markWorkedContext.overlapDates);
+  view = "markWorked";
+  render();
+};
+
+window.toggleWorkedDay = (d) => {
+  if (markWorkedSelected.has(d)) markWorkedSelected.delete(d); else markWorkedSelected.add(d);
+};
+
+window.confirmWorkDone = async () => {
+  const ctx = markWorkedContext;
+  const daysWorked = Array.from(markWorkedSelected).sort();
+  if (!daysWorked.length) { alert("Select at least one day."); return; }
+  try {
+    await addDoc(collection(db, "completedWork"), {
+      workerId: ctx.workerId, workerName: ctx.workerName,
+      employerId: ctx.employerId, employerName: ctx.employerName,
+      jobDescription: ctx.jobDescription || "", payRate: ctx.payRate || "",
+      days: daysWorked, completedAt: new Date().toISOString()
+    });
+
+    const workerRef = doc(db, "workers", ctx.workerId);
+    const workerSnap = await getDoc(workerRef);
+    const newAvailability = (workerSnap.exists() ? (workerSnap.data().availability || []) : []).filter(d => !daysWorked.includes(d));
+    await setDoc(workerRef, { availability: newAvailability }, { merge: true });
+
+    const employerRef = doc(db, "employers", ctx.employerId);
+    const employerSnap = await getDoc(employerRef);
+    const newRequested = (employerSnap.exists() ? (employerSnap.data().requestedDates || []) : []).filter(d => !daysWorked.includes(d));
+    await setDoc(employerRef, { requestedDates: newRequested }, { merge: true });
+
+    if (currentUser.role === "worker" && currentUser.docId === ctx.workerId) {
+      currentUser.availability = newAvailability;
+      selectedDates = new Set(newAvailability);
+    }
+    if (currentUser.role === "employer" && currentUser.docId === ctx.employerId) {
+      currentUser.requestedDates = newRequested;
+      selectedDates = new Set(newRequested);
+    }
+    markWorkedContext = null;
+    view = "main"; mainTab = "matches";
+    render();
+  } catch (e) {
+    alert("Couldn't save that: " + (e.message || e));
+  }
+};
+
+window.openResume = (workerId) => {
+  resumeWorkerId = workerId;
+  view = "resume";
+  render();
+};
+
 // ---------- render ----------
 function renderCalendarGrid(){
   const first = new Date(calYear, calMonth, 1);
@@ -536,6 +603,7 @@ function renderListView(){
       ${withDates.length ? withDates.map(e => `
         <div class="listing">
           <p class="listing-name">${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</p>
+          ${e.phone ? `<p class="listing-meta">📞 ${escapeHtml(e.phone)}</p>` : ""}
           ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
           <div>${formatDateRanges(e.requestedDates).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
         </div>
@@ -543,7 +611,7 @@ function renderListView(){
     `;
   }
   const withAvail = allWorkers.filter(w => (w.availability||[]).length);
-  const otherEmployers = allEmployers.filter(e => e.id !== currentUser.docId && (e.requestedDates||[]).length);
+  const allWithRequests = allEmployers.filter(e => (e.requestedDates||[]).length);
   return `
     <div class="section-label">Available workers</div>
     ${withAvail.length ? withAvail.map(w => `
@@ -551,45 +619,109 @@ function renderListView(){
         <p class="listing-name">${escapeHtml(w.firstName)} ${escapeHtml(w.lastName)}, ${escapeHtml(String(w.age))}</p>
         <p class="listing-meta">📞 ${escapeHtml(w.phone)} &nbsp;·&nbsp; Parent: ${escapeHtml(w.parentName)}</p>
         <div>${formatDateRanges(w.availability).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
+        <button class="btn small" style="margin-top:8px;background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${w.id}')">📄 Resume</button>
       </div>
     `).join("") : `<div class="empty-state">No workers have posted availability yet.</div>`}
 
-    <div class="section-label">Other requests</div>
-    ${otherEmployers.length ? otherEmployers.map(e => `
+    <div class="section-label">All requests</div>
+    ${allWithRequests.length ? allWithRequests.map(e => `
       <div class="listing">
-        <p class="listing-name">${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</p>
+        <p class="listing-name">${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}${e.id === currentUser.docId ? " (you)" : ""}</p>
+        ${e.phone ? `<p class="listing-meta">📞 ${escapeHtml(e.phone)}</p>` : ""}
         ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
         <div>${formatDateRanges(e.requestedDates).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
       </div>
-    `).join("") : `<div class="empty-state">No other requests posted yet.</div>`}
+    `).join("") : `<div class="empty-state">No requests posted yet.</div>`}
   `;
 }
 
 function renderMatchesView(){
+  matchesCache = [];
   if (currentUser.role === "worker") {
     const myDates = currentUser.availability || [];
     const matches = allEmployers
       .map(e => ({ e, overlap: getOverlap(myDates, e.requestedDates) }))
       .filter(m => m.overlap.length);
-    return matches.length ? matches.map(({e, overlap}) => `
+    return matches.length ? matches.map(({e, overlap}) => {
+      const idx = matchesCache.length;
+      matchesCache.push({
+        workerId: currentUser.docId, workerName: displayName(currentUser),
+        employerId: e.id, employerName: displayName(e),
+        jobDescription: e.jobDescription || "", payRate: e.payRate || "",
+        overlapDates: overlap
+      });
+      return `
       <div class="listing">
         <p class="listing-name">🤝 ${escapeHtml(e.firstName)} ${escapeHtml(e.lastName)}</p>
+        ${e.phone ? `<p class="listing-meta">📞 ${escapeHtml(e.phone)}</p>` : ""}
         ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
         <div>${formatDateRanges(overlap).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
+        <button class="btn small" style="margin-top:10px;" onclick="startMarkWorked(${idx})">✅ Mark days worked</button>
       </div>
-    `).join("") : `<div class="empty-state">No matches yet. Once your availability overlaps with an employer's request, they'll show up here.</div>`;
+    `;
+    }).join("") : `<div class="empty-state">No matches yet. Once your availability overlaps with an employer's request, they'll show up here.</div>`;
   }
   const myDates = currentUser.requestedDates || [];
   const matches = allWorkers
     .map(w => ({ w, overlap: getOverlap(myDates, w.availability) }))
     .filter(m => m.overlap.length);
-  return matches.length ? matches.map(({w, overlap}) => `
+  return matches.length ? matches.map(({w, overlap}) => {
+    const idx = matchesCache.length;
+    matchesCache.push({
+      workerId: w.id, workerName: displayName(w),
+      employerId: currentUser.docId, employerName: displayName(currentUser),
+      jobDescription: currentUser.jobDescription || "", payRate: currentUser.payRate || "",
+      overlapDates: overlap
+    });
+    return `
     <div class="listing">
       <p class="listing-name">🤝 ${escapeHtml(w.firstName)} ${escapeHtml(w.lastName)}, ${escapeHtml(String(w.age))}</p>
       <p class="listing-meta">📞 ${escapeHtml(w.phone)} &nbsp;·&nbsp; Parent: ${escapeHtml(w.parentName)}</p>
       <div>${formatDateRanges(overlap).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn small" onclick="startMarkWorked(${idx})">✅ Mark days worked</button>
+        <button class="btn small" style="background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${w.id}')">📄 Resume</button>
+      </div>
     </div>
-  `).join("") : `<div class="empty-state">No matches yet. Once a worker's availability overlaps with your request, they'll show up here.</div>`;
+  `;
+  }).join("") : `<div class="empty-state">No matches yet. Once a worker's availability overlaps with your request, they'll show up here.</div>`;
+}
+
+function renderHistoryView(){
+  const mine = currentUser.role === "worker"
+    ? allCompletedWork.filter(r => r.workerId === currentUser.docId)
+    : allCompletedWork.filter(r => r.employerId === currentUser.docId);
+  const sorted = [...mine].sort((a,b) => (b.completedAt||"").localeCompare(a.completedAt||""));
+  if (!sorted.length) return `<div class="empty-state">No completed work yet — it'll show up here once a match gets marked done.</div>`;
+  return sorted.map(r => `
+    <div class="listing">
+      <p class="listing-name">${currentUser.role === "worker" ? escapeHtml(r.employerName) : escapeHtml(r.workerName)}</p>
+      ${(r.jobDescription || r.payRate) ? `<p class="listing-meta">${escapeHtml(r.jobDescription||"")}${r.jobDescription && r.payRate ? " · " : ""}${escapeHtml(r.payRate||"")}</p>` : ""}
+      <div>${formatDateRanges(r.days).map(x=>`<span class="date-chip">${x}</span>`).join("")}</div>
+    </div>
+  `).join("");
+}
+
+function renderResumeScreen(){
+  const self = currentUser.role === "worker" && currentUser.docId === resumeWorkerId ? currentUser : null;
+  const w = self || allWorkers.find(x => x.id === resumeWorkerId);
+  const records = allCompletedWork.filter(r => r.workerId === resumeWorkerId).sort((a,b) => (b.completedAt||"").localeCompare(a.completedAt||""));
+  const totalDays = records.reduce((sum,r) => sum + (r.days||[]).length, 0);
+  return `
+    <div class="board-title">📌 Rent-A-Teenager</div>
+    <div class="card">
+      <p class="eyebrow">Resume</p>
+      <h2 class="headline">${w ? escapeHtml(displayName(w)) : "Worker"}</h2>
+      <p class="desc">${totalDays} day${totalDays===1?"":"s"} worked across ${records.length} job${records.length===1?"":"s"}.</p>
+      ${records.length ? records.map(r => `
+        <div class="listing">
+          <p class="listing-name">${escapeHtml(r.employerName)}</p>
+          ${(r.jobDescription || r.payRate) ? `<p class="listing-meta">${escapeHtml(r.jobDescription||"")}${r.jobDescription && r.payRate ? " · " : ""}${escapeHtml(r.payRate||"")}</p>` : ""}
+          <div>${formatDateRanges(r.days).map(x=>`<span class="date-chip">${x}</span>`).join("")}</div>
+        </div>
+      `).join("") : `<div class="empty-state">No completed jobs yet.</div>`}
+      <button class="link-back" onclick="goMain()">← Back</button>
+    </div>`;
 }
 
 function render(){
@@ -632,12 +764,14 @@ function render(){
       <div class="board-title">📌 Rent-A-Teenager</div>
       <div class="card pin-blue">
         <p class="eyebrow">Employer access</p>
-        <h2 class="headline">Your name</h2>
+        <h2 class="headline">Your info</h2>
         <p class="desc">Already registered? Enter the same name to pull up your saved requests.</p>
         <label for="empFirst">First name</label>
-        <input id="empFirst" type="text" placeholder="Jaren" autofocus>
+        <input id="empFirst" type="text" autocomplete="off" autofocus>
         <label for="empLast">Last name</label>
-        <input id="empLast" type="text" placeholder="Smith">
+        <input id="empLast" type="text" autocomplete="off">
+        <label for="empPhone">Phone number</label>
+        <input id="empPhone" type="tel" autocomplete="off">
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
         <button class="btn full" onclick="submitEmployerName()">Enter the board</button>
         <button class="link-back" onclick="goEmployerPin()">← Back</button>
@@ -653,7 +787,7 @@ function render(){
         <h2 class="headline">Your phone number</h2>
         <p class="desc">Already signed up? Enter the same number and we'll pull up your info — no need to retype anything.</p>
         <label for="wPhoneLookup">Phone number</label>
-        <input id="wPhoneLookup" type="tel" autofocus>
+        <input id="wPhoneLookup" type="tel" autocomplete="off" autofocus>
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
         <button class="btn full" onclick="submitWorkerPhone()">Continue</button>
         <button class="link-back" onclick="goRoleSelect()">← Back</button>
@@ -669,13 +803,13 @@ function render(){
         <h2 class="headline">Tell us about you</h2>
         <p class="desc">Number: ${escapeHtml(pendingPhone)}</p>
         <label for="wFirst">First name</label>
-        <input id="wFirst" type="text" autofocus>
+        <input id="wFirst" type="text" autocomplete="off" autofocus>
         <label for="wLast">Last name</label>
-        <input id="wLast" type="text">
+        <input id="wLast" type="text" autocomplete="off">
         <label for="wAge">Age</label>
         <input id="wAge" type="number" min="13" max="19">
         <label for="wParent">Parent/guardian name</label>
-        <input id="wParent" type="text">
+        <input id="wParent" type="text" autocomplete="off">
         <p class="hint">Employers can see this info to contact you about work.</p>
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
         <button class="btn full" onclick="submitWorkerInfo()">Enter the board</button>
@@ -744,17 +878,47 @@ function render(){
         </span>
       </div>
       <div class="tabs">
-        <button class="tab-btn ${mainTab==='calendar'?'active':''}" onclick="setTab('calendar')">📅 Calendar</button>
-        <button class="tab-btn ${mainTab==='list'?'active':''}" onclick="setTab('list')">📋 List view</button>
+        <button class="tab-btn ${mainTab==='calendar'?'active':''}" onclick="setTab('calendar')">📅 Cal</button>
+        <button class="tab-btn ${mainTab==='list'?'active':''}" onclick="setTab('list')">📋 List</button>
         <button class="tab-btn ${mainTab==='matches'?'active':''}" onclick="setTab('matches')">🤝 Matches</button>
+        <button class="tab-btn ${mainTab==='history'?'active':''}" onclick="setTab('history')">🕒 History</button>
       </div>
       <div class="card">
         ${mainTab === 'calendar'
           ? `<p class="eyebrow">${currentUser.role === 'worker' ? 'Mark your availability' : 'Mark days you need help'}</p>` + renderCalendarGrid()
           : mainTab === 'matches'
           ? `<p class="eyebrow">Where you overlap</p>` + renderMatchesView()
+          : mainTab === 'history'
+          ? `<p class="eyebrow">Completed work</p>` + renderHistoryView()
           : `<p class="eyebrow">The board</p>` + renderListView()}
       </div>`;
+    return;
+  }
+
+  if (view === "markWorked") {
+    const ctx = markWorkedContext;
+    const isWorkerViewing = currentUser.role === "worker";
+    const otherName = isWorkerViewing ? ctx.employerName : ctx.workerName;
+    root.innerHTML = `
+      <div class="board-title">📌 Rent-A-Teenager</div>
+      <div class="card">
+        <p class="eyebrow">Mark work done</p>
+        <h2 class="headline">${isWorkerViewing ? `You worked for ${escapeHtml(otherName)}` : `${escapeHtml(otherName)} worked for you`}</h2>
+        <p class="desc">Check off the days that actually happened. Anything left unchecked stays open on the calendar.</p>
+        ${ctx.overlapDates.map(d => `
+          <label style="display:flex;align-items:center;gap:10px;font-weight:400;margin:10px 0;font-size:1rem;">
+            <input type="checkbox" ${markWorkedSelected.has(d) ? "checked" : ""} onchange="toggleWorkedDay('${d}')" style="width:auto;height:18px;">
+            ${formatDateChip(d)}
+          </label>
+        `).join("")}
+        <button class="btn full" onclick="confirmWorkDone()">Confirm completed days</button>
+        <button class="link-back" onclick="goMain()">← Cancel</button>
+      </div>`;
+    return;
+  }
+
+  if (view === "resume") {
+    root.innerHTML = renderResumeScreen();
     return;
   }
 }
