@@ -229,9 +229,9 @@ const TUTORIAL_STEPS = {
 };
 
 // ---------- state ----------
-let view = "loading"; // loading | roleSelect | employerPin | employerName | workerPhone | workerInfo | main | employerJobInfo | settings | markWorked | resume
+let view = "loading"; // loading | roleSelect | employerPin | employerName | workerName | workerInfo | main | employerJobInfo | settings | markWorked | resume
 let currentUser = null; // { docId, role, ...profile }
-let pendingPhone = "";
+let pendingWorker = null; // { first, last, slug } captured on name screen, completed on info screen
 let mainTab = "calendar";
 let calMonth = new Date().getMonth();
 let calYear = new Date().getFullYear();
@@ -385,7 +385,7 @@ function clearListeners(){ unsubs.forEach(u => u()); unsubs = []; }
 // ---------- nav actions ----------
 window.goRoleSelect = () => { view = "roleSelect"; formError=""; render(); };
 window.goEmployerPin = () => { view = "employerPin"; formError=""; render(); };
-window.goWorkerPhone = () => { view = "workerPhone"; formError=""; render(); };
+window.goWorkerName = () => { view = "workerName"; formError=""; render(); };
 
 window.submitPin = () => {
   const val = document.getElementById("pinInput").value.trim();
@@ -430,23 +430,27 @@ window.submitEmployerName = async () => {
   }
 };
 
-window.submitWorkerPhone = async () => {
-  const raw = document.getElementById("wPhoneLookup").value.trim();
-  const phone = normalizePhone(raw);
-  if (phone.length < 7) { formError = "Enter a valid phone number."; render(); return; }
+window.submitWorkerName = async () => {
+  const first = document.getElementById("wFirstLookup").value.trim();
+  const last = document.getElementById("wLastLookup").value.trim();
+  if (!first || !last) { formError = "First and last name are both required."; render(); return; }
+  const slug = nameSlug(first, last);
+  if (!slug) { formError = "Please enter a valid name."; render(); return; }
   try {
-    const ref = doc(db, "workers", phone);
+    const ref = doc(db, "workers", slug);
     const existing = await getDoc(ref);
-    if (existing.exists() && existing.data().firstName) {
-      currentUser = { docId: phone, role: "worker", ...existing.data() };
+    if (existing.exists() && existing.data().phone) {
+      // always re-save name on login — heals any older record that's missing it
+      await setDoc(ref, { firstName: first, lastName: last }, { merge: true });
+      currentUser = { docId: slug, role: "worker", ...existing.data(), firstName: first, lastName: last };
       selectedDates = new Set(currentUser.availability || []);
-      await rememberSession("worker", phone);
+      await rememberSession("worker", slug);
       view = "main"; mainTab = "calendar"; formError = "";
       maybeStartTutorial("worker");
       attachListeners();
       render();
     } else {
-      pendingPhone = phone;
+      pendingWorker = { first, last, slug };
       formError = "";
       view = "workerInfo";
       render();
@@ -458,22 +462,22 @@ window.submitWorkerPhone = async () => {
 };
 
 window.submitWorkerInfo = async () => {
-  const first = document.getElementById("wFirst").value.trim();
-  const last = document.getElementById("wLast").value.trim();
+  const phone = normalizePhone(document.getElementById("wPhone").value.trim());
   const age = parseInt(document.getElementById("wAge").value, 10);
   const parent = document.getElementById("wParent").value.trim();
-  if (!first || !last || !age || !parent) { formError = "All fields are required."; render(); return; }
+  if (phone.length < 7 || !age || !parent) { formError = "All fields are required."; render(); return; }
   try {
-    const ref = doc(db, "workers", pendingPhone);
+    const { first, last, slug } = pendingWorker;
+    const ref = doc(db, "workers", slug);
     const existing = await getDoc(ref);
     const priorAvailability = existing.exists() ? (existing.data().availability || []) : [];
     await setDoc(ref, {
-      firstName: first, lastName: last, phone: pendingPhone, age, parentName: parent,
+      firstName: first, lastName: last, phone, age, parentName: parent,
       availability: priorAvailability, createdAt: new Date().toISOString()
     }, { merge: true });
-    currentUser = { docId: pendingPhone, role: "worker", firstName: first, lastName: last, phone: pendingPhone, age, parentName: parent, availability: priorAvailability };
+    currentUser = { docId: slug, role: "worker", firstName: first, lastName: last, phone, age, parentName: parent, availability: priorAvailability };
     selectedDates = new Set(priorAvailability);
-    await rememberSession("worker", pendingPhone);
+    await rememberSession("worker", slug);
     view = "main"; mainTab = "calendar"; formError = "";
     maybeStartTutorial("worker");
     attachListeners();
@@ -881,7 +885,7 @@ function render(){
         <h2 class="headline">Who are you?</h2>
         <p class="desc">Pick one to continue.</p>
         <div class="role-grid">
-          <div class="role-btn" onclick="goWorkerPhone()"><span class="emoji">🧑‍🔧</span> Worker<span class="tag">I want to find work</span></div>
+          <div class="role-btn" onclick="goWorkerName()"><span class="emoji">🧑‍🔧</span> Worker<span class="tag">I want to find work</span></div>
           <div class="role-btn" onclick="goEmployerPin()"><span class="emoji">🏠</span> Employer<span class="tag">I need to hire help</span></div>
         </div>
       </div>`;
@@ -924,17 +928,19 @@ function render(){
     return;
   }
 
-  if (view === "workerPhone") {
+  if (view === "workerName") {
     root.innerHTML = `
       <div class="board-title">📌 Rent-A-Teenager</div>
       <div class="card">
         <p class="eyebrow">Worker access</p>
-        <h2 class="headline">Your phone number</h2>
-        <p class="desc">Already signed up? Enter the same number and we'll pull up your info — no need to retype anything.</p>
-        <label for="wPhoneLookup">Phone number</label>
-        <input id="wPhoneLookup" type="tel" autocomplete="off" autofocus>
+        <h2 class="headline">Your name</h2>
+        <p class="desc">Already signed up? Enter the same name and we'll pull up your info — no need to retype anything. No PIN needed here.</p>
+        <label for="wFirstLookup">First name</label>
+        <input id="wFirstLookup" type="text" autocomplete="off" autofocus>
+        <label for="wLastLookup">Last name</label>
+        <input id="wLastLookup" type="text" autocomplete="off">
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
-        <button class="btn full" onclick="submitWorkerPhone()">Continue</button>
+        <button class="btn full" onclick="submitWorkerName()">Continue</button>
         <button class="link-back" onclick="goRoleSelect()">← Back</button>
       </div>`;
     return;
@@ -945,12 +951,10 @@ function render(){
       <div class="board-title">📌 Rent-A-Teenager</div>
       <div class="card">
         <p class="eyebrow">Worker sign-up</p>
-        <h2 class="headline">Tell us about you</h2>
-        <p class="desc">Number: ${escapeHtml(pendingPhone)}</p>
-        <label for="wFirst">First name</label>
-        <input id="wFirst" type="text" autocomplete="off" autofocus>
-        <label for="wLast">Last name</label>
-        <input id="wLast" type="text" autocomplete="off">
+        <h2 class="headline">A few more details</h2>
+        <p class="desc">${escapeHtml(pendingWorker.first)} ${escapeHtml(pendingWorker.last)}</p>
+        <label for="wPhone">Phone number</label>
+        <input id="wPhone" type="tel" autocomplete="off" autofocus>
         <label for="wAge">Age</label>
         <input id="wAge" type="number" min="13" max="19">
         <label for="wParent">Parent/guardian name</label>
@@ -958,7 +962,7 @@ function render(){
         <p class="hint">Employers can see this info to contact you about work.</p>
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
         <button class="btn full" onclick="submitWorkerInfo()">Enter the board</button>
-        <button class="link-back" onclick="goWorkerPhone()">← Back</button>
+        <button class="link-back" onclick="goWorkerName()">← Back</button>
       </div>`;
     return;
   }
