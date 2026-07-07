@@ -152,6 +152,30 @@
 
   .switch-link{background:none;border:none;color:#6b6153;font-size:0.78rem;text-decoration:underline;cursor:pointer;font-family:'Karla',sans-serif;}
   .loading-msg{color:var(--tape);text-align:center;padding:60px 0;font-family:'Kalam',cursive;font-size:1.2rem;}
+
+  .tutorial-overlay{
+    position:fixed;inset:0;z-index:50;background:rgba(20,15,10,0.5);
+    display:flex;align-items:flex-end;justify-content:center;padding:16px;
+  }
+  .tutorial-popup{
+    background:var(--tape);border:2px solid var(--ink);border-radius:4px;padding:18px;
+    max-width:480px;width:100%;box-shadow:0 -4px 20px rgba(0,0,0,0.4);
+    animation:tutorial-pop-in .2s ease;
+  }
+  @keyframes tutorial-pop-in{from{transform:translateY(12px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+  .tutorial-popup p{margin:0 0 16px;font-size:1rem;line-height:1.4;font-family:'Kalam',cursive;}
+  .tutorial-controls{display:flex;justify-content:space-between;align-items:center;gap:10px;}
+  @keyframes tutorial-flash-anim{
+    0%,100%{box-shadow:0 0 0 0 rgba(201,79,61,0.6);}
+    50%{box-shadow:0 0 0 8px rgba(201,79,61,0);}
+  }
+  .tutorial-flash{
+    animation:tutorial-flash-anim 1s ease-in-out infinite;
+    position:relative;z-index:51;outline:3px solid var(--pin-red);outline-offset:2px;
+  }
+  @media (prefers-reduced-motion: reduce){
+    .tutorial-flash{animation:none;outline:3px solid var(--pin-red);}
+  }
   @media (prefers-reduced-motion: reduce){.role-btn, .btn{transition:none;}}
 </style>
 </head>
@@ -176,6 +200,33 @@ const db = getFirestore(app);
 
 const EMPLOYER_PIN = "4321"; // just a shared screen-only code — no server-side enforcement
 const SESSION_KEY = "rat-session";
+const TUTORIAL_KEY_PREFIX = "rat-tutorial-done-";
+
+const TUTORIAL_STEPS = {
+  worker: [
+    { target: null, switchTab: "calendar", text: "Quick tour of how this works — tap Next to keep going, or Skip whenever." },
+    { target: "tab-calendar", switchTab: "calendar", text: "This is your Calendar. Tap any day to mark yourself available — tap it again to un-mark it." },
+    { target: "confirm-btn", switchTab: "calendar", text: "Once you've picked your days, hit Confirm to save them." },
+    { target: "tab-list", switchTab: "list", text: "List view shows every job that's been posted, including what it pays." },
+    { target: "tab-matches", switchTab: "matches", text: "Matches shows you exactly which days line up between you and someone who needs help." },
+    { target: "mark-worked-btn", switchTab: "matches", text: "After you've actually done the work, come back here and tap Mark days worked to log it." },
+    { target: "tab-history", switchTab: "history", text: "History keeps a running log of every job you've completed." },
+    { target: "settings-btn", switchTab: "history", text: "Settings lets you fix your info or delete your entry if you ever need to." },
+    { target: null, switchTab: "calendar", text: "That's it — you're ready to go!" }
+  ],
+  employer: [
+    { target: null, switchTab: "calendar", text: "Quick tour of how this works — tap Next to keep going, or Skip whenever." },
+    { target: "tab-calendar", switchTab: "calendar", text: "This is your Calendar. Tap any day you need help — tap it again to remove it." },
+    { target: "confirm-btn", switchTab: "calendar", text: "Hit Confirm once you've picked your days. Right after, you'll get a chance to describe the job and what it pays — totally optional." },
+    { target: "tab-list", switchTab: "list", text: "List view shows worker availability and every request that's been posted." },
+    { target: "resume-btn", switchTab: "list", text: "Tap Resume on any worker's card to see their completed job history before you bring them on." },
+    { target: "tab-matches", switchTab: "matches", text: "Matches shows exactly which workers line up with the days you need help." },
+    { target: "mark-worked-btn", switchTab: "matches", text: "Once a job's done, mark it here — it logs to History and clears those days off the calendar." },
+    { target: "tab-history", switchTab: "history", text: "History shows every completed job on the board." },
+    { target: "settings-btn", switchTab: "history", text: "Settings lets you manage entries or leave the board." },
+    { target: null, switchTab: "calendar", text: "That's it — you're ready to go!" }
+  ]
+};
 
 // ---------- state ----------
 let view = "loading"; // loading | roleSelect | employerPin | employerName | workerPhone | workerInfo | main | employerJobInfo | settings | markWorked | resume
@@ -193,9 +244,31 @@ let matchesCache = [];
 let markWorkedContext = null; // { workerId, workerName, employerId, employerName, jobDescription, payRate, overlapDates }
 let markWorkedSelected = new Set();
 let resumeWorkerId = null;
+let tutorialActive = null; // null | "worker" | "employer"
+let tutorialStep = 0;
 let unsubs = [];
 
 const root = document.getElementById("app");
+
+function hasTutorialBeenSeen(role){
+  try { return localStorage.getItem(TUTORIAL_KEY_PREFIX + role) === "1"; }
+  catch (e) { return true; }
+}
+function markTutorialSeen(role){
+  try { localStorage.setItem(TUTORIAL_KEY_PREFIX + role, "1"); } catch (e) { /* non-fatal */ }
+}
+function maybeStartTutorial(role){
+  if (hasTutorialBeenSeen(role)) return;
+  tutorialActive = role;
+  tutorialStep = 0;
+  const first = TUTORIAL_STEPS[role][0];
+  if (first.switchTab) mainTab = first.switchTab;
+}
+function isFlashTarget(name){
+  if (!tutorialActive) return false;
+  return TUTORIAL_STEPS[tutorialActive][tutorialStep].target === name;
+}
+function flashClass(name){ return isFlashTarget(name) ? "tutorial-flash" : ""; }
 
 function normalizePhone(p){ return (p || "").replace(/\D/g, ""); }
 function nameSlug(first, last){
@@ -272,6 +345,7 @@ async function readRememberedSession(){
         currentUser = { docId: remembered.docId, role: remembered.role, ...snap.data() };
         selectedDates = new Set(currentUser[remembered.role === "worker" ? "availability" : "requestedDates"] || []);
         view = "main";
+        maybeStartTutorial(remembered.role);
         attachListeners();
         render();
         return;
@@ -347,6 +421,7 @@ window.submitEmployerName = async () => {
     }
     await rememberSession("employer", slug);
     view = "main"; mainTab = "calendar"; formError = "";
+    maybeStartTutorial("employer");
     attachListeners();
     render();
   } catch (e) {
@@ -367,6 +442,7 @@ window.submitWorkerPhone = async () => {
       selectedDates = new Set(currentUser.availability || []);
       await rememberSession("worker", phone);
       view = "main"; mainTab = "calendar"; formError = "";
+      maybeStartTutorial("worker");
       attachListeners();
       render();
     } else {
@@ -399,6 +475,7 @@ window.submitWorkerInfo = async () => {
     selectedDates = new Set(priorAvailability);
     await rememberSession("worker", pendingPhone);
     view = "main"; mainTab = "calendar"; formError = "";
+    maybeStartTutorial("worker");
     attachListeners();
     render();
   } catch (e) {
@@ -445,6 +522,37 @@ window.deleteEntry = async (collectionName, id) => {
 };
 
 window.setTab = (tab) => { mainTab = tab; render(); };
+
+window.nextTutorialStep = () => {
+  const steps = TUTORIAL_STEPS[tutorialActive];
+  tutorialStep++;
+  if (tutorialStep >= steps.length) {
+    markTutorialSeen(tutorialActive);
+    tutorialActive = null;
+    tutorialStep = 0;
+    render();
+    return;
+  }
+  const step = steps[tutorialStep];
+  if (step.switchTab) mainTab = step.switchTab;
+  render();
+};
+
+window.skipTutorial = () => {
+  markTutorialSeen(tutorialActive);
+  tutorialActive = null;
+  tutorialStep = 0;
+  render();
+};
+
+window.replayTutorial = () => {
+  tutorialActive = currentUser.role;
+  tutorialStep = 0;
+  const first = TUTORIAL_STEPS[currentUser.role][0];
+  if (first.switchTab) mainTab = first.switchTab;
+  view = "main";
+  render();
+};
 window.navMonth = (delta) => {
   calMonth += delta;
   if (calMonth < 0) { calMonth = 11; calYear--; }
@@ -599,7 +707,7 @@ function renderCalendarGrid(){
       ${cells}
     </div>
     <div class="save-row">
-      <button class="btn" onclick="confirmDates()">Confirm ${isEmployer ? "requested" : "available"} days</button>
+      <button class="btn ${flashClass('confirm-btn')}" onclick="confirmDates()">Confirm ${isEmployer ? "requested" : "available"} days</button>
       <span class="saved-flash" id="savedFlash">Saved ✓</span>
     </div>
   `;
@@ -629,7 +737,7 @@ function renderListView(){
         <p class="listing-name">${escapeHtml(w.firstName)} ${escapeHtml(w.lastName)}, ${escapeHtml(String(w.age))}</p>
         <p class="listing-meta">📞 ${escapeHtml(w.phone)} &nbsp;·&nbsp; Parent: ${escapeHtml(w.parentName)}</p>
         <div>${formatDateRanges(w.availability).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
-        <button class="btn small" style="margin-top:8px;background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${w.id}')">📄 Resume</button>
+        <button class="btn small ${flashClass('resume-btn')}" style="margin-top:8px;background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${w.id}')">📄 Resume</button>
       </div>
     `).join("") : `<div class="empty-state">No workers have posted availability yet.</div>`}
 
@@ -666,7 +774,7 @@ function renderMatchesView(){
         ${e.phone ? `<p class="listing-meta">📞 ${escapeHtml(e.phone)}</p>` : ""}
         ${(e.jobDescription || e.payRate) ? `<p class="listing-meta">${escapeHtml(e.jobDescription||"")}${e.jobDescription && e.payRate ? " · " : ""}${escapeHtml(e.payRate||"")}</p>` : ""}
         <div>${formatDateRanges(overlap).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
-        <button class="btn small" style="margin-top:10px;" onclick="startMarkWorked(${idx})">✅ Mark days worked</button>
+        <button class="btn small ${flashClass('mark-worked-btn')}" style="margin-top:10px;" onclick="startMarkWorked(${idx})">✅ Mark days worked</button>
       </div>
     `;
     }).join("") : `<div class="empty-state">No matches yet. Once your availability overlaps with an employer's request, they'll show up here.</div>`;
@@ -689,8 +797,8 @@ function renderMatchesView(){
       <p class="listing-meta">📞 ${escapeHtml(w.phone)} &nbsp;·&nbsp; Parent: ${escapeHtml(w.parentName)}</p>
       <div>${formatDateRanges(overlap).map(r=>`<span class="date-chip">${r}</span>`).join("")}</div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        <button class="btn small" onclick="startMarkWorked(${idx})">✅ Mark days worked</button>
-        <button class="btn small" style="background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${w.id}')">📄 Resume</button>
+        <button class="btn small ${flashClass('mark-worked-btn')}" onclick="startMarkWorked(${idx})">✅ Mark days worked</button>
+        <button class="btn small ${flashClass('resume-btn')}" style="background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${w.id}')">📄 Resume</button>
       </div>
     </div>
   `;
@@ -742,6 +850,22 @@ function renderResumeScreen(){
         </div>
       `).join("") : `<div class="empty-state">No completed jobs yet.</div>`}
       <button class="link-back" onclick="goMain()">← Back</button>
+    </div>`;
+}
+
+function renderTutorialOverlay(){
+  const steps = TUTORIAL_STEPS[tutorialActive];
+  const step = steps[tutorialStep];
+  const isLast = tutorialStep >= steps.length - 1;
+  return `
+    <div class="tutorial-overlay">
+      <div class="tutorial-popup">
+        <p>${step.text}</p>
+        <div class="tutorial-controls">
+          <button class="switch-link" onclick="skipTutorial()">Skip tutorial</button>
+          <button class="btn small" onclick="nextTutorialStep()">${isLast ? "Done" : "Next"}</button>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -864,6 +988,7 @@ function render(){
         <h2 class="headline">${escapeHtml(displayName(currentUser))}</h2>
         <p class="desc">Deleting removes this entry from Firebase for good — it won't come back by logging in again.</p>
         <button class="btn full" style="background:var(--pin-red)" onclick="deleteMyEntry()">Delete my entry</button>
+        <button class="link-back" onclick="replayTutorial()">↻ Replay tutorial</button>
         <button class="link-back" onclick="goMain()">← Back</button>
       </div>
       ${isEmployer ? `
@@ -893,16 +1018,16 @@ function render(){
       <div class="topbar">
         <div class="whoami"><strong>${escapeHtml(displayName(currentUser))}</strong><span class="badge ${currentUser.role}">${currentUser.role}</span></div>
         <span>
-          <button class="switch-link" onclick="goSettings()">Settings ⚙️</button>
+          <button class="switch-link ${flashClass('settings-btn')}" onclick="goSettings()">Settings ⚙️</button>
           &nbsp;·&nbsp;
           <button class="switch-link" onclick="switchUser()">Switch user</button>
         </span>
       </div>
       <div class="tabs">
-        <button class="tab-btn ${mainTab==='calendar'?'active':''}" onclick="setTab('calendar')">📅 Cal</button>
-        <button class="tab-btn ${mainTab==='list'?'active':''}" onclick="setTab('list')">📋 List</button>
-        <button class="tab-btn ${mainTab==='matches'?'active':''}" onclick="setTab('matches')">🤝 Matches</button>
-        <button class="tab-btn ${mainTab==='history'?'active':''}" onclick="setTab('history')">🕒 History</button>
+        <button class="tab-btn ${mainTab==='calendar'?'active':''} ${flashClass('tab-calendar')}" onclick="setTab('calendar')">📅 Cal</button>
+        <button class="tab-btn ${mainTab==='list'?'active':''} ${flashClass('tab-list')}" onclick="setTab('list')">📋 List</button>
+        <button class="tab-btn ${mainTab==='matches'?'active':''} ${flashClass('tab-matches')}" onclick="setTab('matches')">🤝 Matches</button>
+        <button class="tab-btn ${mainTab==='history'?'active':''} ${flashClass('tab-history')}" onclick="setTab('history')">🕒 History</button>
       </div>
       <div class="card">
         ${mainTab === 'calendar'
@@ -912,7 +1037,8 @@ function render(){
           : mainTab === 'history'
           ? `<p class="eyebrow">Completed work</p>` + renderHistoryView()
           : `<p class="eyebrow">The board</p>` + renderListView()}
-      </div>`;
+      </div>
+      ${tutorialActive ? renderTutorialOverlay() : ""}`;
     return;
   }
 
