@@ -156,7 +156,7 @@
   .tutorial-overlay{
     position:fixed;inset:0;z-index:50;background:rgba(20,15,10,0.5);
     display:flex;align-items:flex-start;justify-content:center;padding:16px;
-    padding-top:max(200px, calc(env(safe-area-inset-top) + 180px));
+    padding-top:max(240px, calc(env(safe-area-inset-top) + 220px));
   }
   .tutorial-popup{
     position:relative;z-index:52;
@@ -959,7 +959,7 @@ function render(){
         <input id="wPhone" type="tel" autocomplete="off" autofocus>
         <label for="wAge">Age</label>
         <input id="wAge" type="number" min="13" max="19">
-        <label for="wParent">Parent/guardian name</label>
+        <label for="wParent">Parent name</label>
         <input id="wParent" type="text" autocomplete="off">
         <p class="hint">Employers can see this info to contact you about work.</p>
         ${formError ? `<div class="error-msg">${formError}</div>` : ""}
