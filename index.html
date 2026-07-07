@@ -698,16 +698,27 @@ function renderMatchesView(){
 }
 
 function renderHistoryView(){
-  const mine = currentUser.role === "worker"
-    ? allCompletedWork.filter(r => r.workerId === currentUser.docId)
-    : allCompletedWork.filter(r => r.employerId === currentUser.docId);
-  const sorted = [...mine].sort((a,b) => (b.completedAt||"").localeCompare(a.completedAt||""));
+  if (currentUser.role === "worker") {
+    const mine = allCompletedWork.filter(r => r.workerId === currentUser.docId);
+    const sorted = [...mine].sort((a,b) => (b.completedAt||"").localeCompare(a.completedAt||""));
+    if (!sorted.length) return `<div class="empty-state">No completed work yet — it'll show up here once a match gets marked done.</div>`;
+    return sorted.map(r => `
+      <div class="listing">
+        <p class="listing-name">${escapeHtml(r.employerName)}</p>
+        ${(r.jobDescription || r.payRate) ? `<p class="listing-meta">${escapeHtml(r.jobDescription||"")}${r.jobDescription && r.payRate ? " · " : ""}${escapeHtml(r.payRate||"")}</p>` : ""}
+        <div>${formatDateRanges(r.days).map(x=>`<span class="date-chip">${x}</span>`).join("")}</div>
+      </div>
+    `).join("");
+  }
+  // employers see every completed job on the board, not just their own
+  const sorted = [...allCompletedWork].sort((a,b) => (b.completedAt||"").localeCompare(a.completedAt||""));
   if (!sorted.length) return `<div class="empty-state">No completed work yet — it'll show up here once a match gets marked done.</div>`;
   return sorted.map(r => `
     <div class="listing">
-      <p class="listing-name">${currentUser.role === "worker" ? escapeHtml(r.employerName) : escapeHtml(r.workerName)}</p>
+      <p class="listing-name">${escapeHtml(r.workerName)} <span style="font-weight:400;color:#7a6f5c;">for</span> ${escapeHtml(r.employerName)}</p>
       ${(r.jobDescription || r.payRate) ? `<p class="listing-meta">${escapeHtml(r.jobDescription||"")}${r.jobDescription && r.payRate ? " · " : ""}${escapeHtml(r.payRate||"")}</p>` : ""}
       <div>${formatDateRanges(r.days).map(x=>`<span class="date-chip">${x}</span>`).join("")}</div>
+      <button class="btn small" style="margin-top:8px;background:var(--paper-dark);color:var(--ink);border:2px solid var(--ink);box-shadow:none;" onclick="openResume('${r.workerId}')">📄 Resume</button>
     </div>
   `).join("");
 }
